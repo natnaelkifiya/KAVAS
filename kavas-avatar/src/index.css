@@ -1,0 +1,54 @@
+#root {
+  width: 100vw;
+  height: 100vh;
+}
+
+body {
+  margin: 0;
+}
+
+/* Fullscreen canvas */
+canvas {
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1; /* Ensure canvas stays behind */
+}
+
+/* Siri-like Circular Visualizer */
+.voice-visualizer {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 120px;
+  height: 120px;
+}
+
+/* Main pulsating circle */
+.circle {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  transition: transform 0.1s ease-out;
+}
+
+/* Ripple effect that expands based on sound level */
+.ripple {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(27, 19, 19, 0.2);
+  opacity: 0.6;
+  transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+}
