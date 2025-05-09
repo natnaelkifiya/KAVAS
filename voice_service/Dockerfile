@@ -1,9 +1,9 @@
 # Use an official Python runtime as a parent image
-FROM python:3.12.5-bullseye
+FROM python:3.12.5-slim
 
 # install ffmpeg and cleanup
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg libpq-dev gcc && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Login to Hugging Face CLI using a token
 ARG HF_TOKEN
-RUN huggingface-cli login --token $HF_TOKEN
+RUN huggingface-cli login --token ${HF_TOKEN}
 
 # Copy the current directory contents into the container at /app
 COPY . .

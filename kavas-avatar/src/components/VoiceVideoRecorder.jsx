@@ -6,6 +6,7 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
   const circleRef = useRef(null);
   const rippleRef = useRef(null);
   const ws = useRef(null);
+  const ws_img = useRef(null);
   const isListening = useRef(false);
   const isTalkingRef = useRef(isTalking);
   const videoRef = useRef(null);
@@ -18,6 +19,30 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
   useEffect(() => {
     isTalkingRef.current = isTalking;
   }, [isTalking]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (
+        ws_img.current?.readyState === WebSocket.OPEN &&
+        videoRef.current &&
+        canvasRef.current
+      ) {
+
+        const videoBase64 = captureVideoFrame();
+
+        if (ws_img.current?.readyState === WebSocket.OPEN) {
+          ws_img.current.send(
+            JSON.stringify({
+              video: videoBase64, // Send only video
+            })
+          );
+          console.log("Sent video frame");
+        }
+      }
+    }, 200); // 1000ms / 10 = 100ms (10 frames per second)
+
+    return () => clearInterval(interval); // Clean up
+  }, []);
 
   const base64ToBlob = (base64, contentType) => {
     const byteCharacters = atob(base64);
@@ -36,11 +61,17 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
     return new Blob(byteArrays, { type: contentType });
   };
 
-  const handleAudioReceived = (audioBase64, lipsyncData) => {
+  const handleAudioReceived = (audioBase64, lipsyncData, isValid) => {
     console.log("Audio handler called");
-    const audioBlob = base64ToBlob(audioBase64, "audio/wav");
-    const audioUrl = URL.createObjectURL(audioBlob);
-    onAudioReceived(audioUrl, lipsyncData);
+    isWaitingForResponse.current = false;
+
+    if (isValid){
+      const audioBlob = base64ToBlob(audioBase64, "audio/wav");
+      const audioUrl = URL.createObjectURL(audioBlob);
+      onAudioReceived(audioUrl, lipsyncData);
+    }
+  };
+  const handleInvalidRecieved = () => {
     isWaitingForResponse.current = false;
   };
 
@@ -115,13 +146,11 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
           const reader = new FileReader();
           reader.onloadend = () => {
             const base64Audio = reader.result.split(",")[1];
-            const videoBase64 = captureVideoFrame();
 
             if (ws.current?.readyState === WebSocket.OPEN) {
               ws.current.send(
                 JSON.stringify({
                   audio: base64Audio,
-                  video: videoBase64,
                 })
               );
               console.log("Sent audio and video payload");
@@ -145,6 +174,39 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
     }
   };
 
+
+  // Function to save image to file (optional)
+  const saveImageToFile = (base64Data) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `captured_frame_${timestamp}.jpg`;
+
+    // Convert base64 to blob
+    const byteCharacters = atob(base64Data);
+    const byteArrays = [];
+
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512);
+      const byteNumbers = new Array(slice.length);
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      byteArrays.push(byteArray);
+    }
+
+    const blob = new Blob(byteArrays, { type: 'image/jpeg' });
+
+    // Create download link (alternative: send to server)
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const initializeMediaStream = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -155,9 +217,14 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
           noiseSuppression: true,
           autoGainControl: true,
         },
+      });
+      const videoStream = await navigator.mediaDevices.getUserMedia({
         video: true,
       });
       mediaStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = videoStream;
+      }
       return stream;
     } catch (error) {
       console.error("Failed to get media stream:", error);
@@ -233,17 +300,29 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
   const captureVideoFrame = () => {
     const context = canvasRef.current.getContext("2d");
     context.drawImage(videoRef.current, 0, 0, 640, 480);
-    return canvasRef.current.toDataURL("image/jpeg").split(",")[1];
+
+    // Get the base64 image data
+    const imageData = canvasRef.current.toDataURL("image/jpeg").split(",")[1];
+
+    // saveImageToFile(imageData);
+    return imageData
+
   };
 
   useEffect(() => {
     const setUpWs = () => {
       ws.current = new WebSocket(
-        process.env.WEBSOCKET_URL || "ws://localhost:8004/ws/media"
+        "ws://localhost:8004/ws/media"
       );
+      ws_img.current = new WebSocket(
+        "ws://localhost:8004/ws/img"
+      )
 
       ws.current.onopen = () => {
         console.log("WebSocket connection established");
+      };
+      ws_img.current.onopen = () => {
+        console.log("Image WebSocket connection established");
       };
 
       ws.current.onmessage = (event) => {
@@ -255,7 +334,10 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
         try {
           const response = JSON.parse(event.data);
           if (response.audio && response.lipsync) {
-            handleAudioReceived(response.audio, response.lipsync);
+            handleAudioReceived(response.audio, response.lipsync, response.valid);
+          }
+          else {
+            handleInvalidRecieved()
           }
         } catch (error) {
           console.error("Error processing websocket message:", error);
@@ -265,8 +347,14 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
       ws.current.onclose = () => {
         console.log("WebSocket connection closed");
       };
+      ws_img.current.onclose = () => {
+        console.log("Image WebSocket connection closed");
+      };
 
       ws.current.onerror = (error) => {
+        console.error("WebSocket error:", error);
+      };
+      ws_img.current.onerror = (error) => {
         console.error("WebSocket error:", error);
       };
     };
@@ -312,6 +400,9 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
       if (ws.current) {
         ws.current.close();
       }
+      if (ws_img.current) {
+        ws_img.current.close();
+      }
     };
   }, []);
 
@@ -343,7 +434,12 @@ export const VoiceVideoRecorder = ({ onAudioReceived, isTalking }) => {
     <div className="voice-visualizer">
       <div className="ripple" ref={rippleRef}></div>
       <div className="circle" ref={circleRef}></div>
-      <video ref={videoRef} style={{ opacity: 0 }} autoPlay muted playsInline />
+      <video
+        ref={videoRef}
+        style={{ opacity: 0, position: 'absolute' }}
+        autoPlay
+        playsInline
+      />
       <canvas
         ref={canvasRef}
         style={{ display: "none" }}

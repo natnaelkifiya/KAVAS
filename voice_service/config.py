@@ -15,5 +15,6 @@ class Settings(BaseModel):
     DB_POOL_MAX_SIZE: int = int(os.getenv("DB_POOL_MAX_SIZE", "10"))
     
     GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
+    OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 
 MySettings = Settings()

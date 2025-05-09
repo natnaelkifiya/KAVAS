@@ -29,13 +29,13 @@ export function Avatar({
   const { camera } = useThree();
 
   // Load animations
-  const { animations } = useGLTF("animations/animations.glb");
+  const { animations } = useGLTF("animations/new_animations.glb");
   const { actions, mixer } = useAnimations(animations, group);
 
   // Store mouth cues and audio reference
   const [mouthCues, setMouthCues] = useState([]);
   const audioRef = useRef(null);
-  const [animation, setAnimation] = useState("Standing");
+  const [animation, setAnimation] = useState("Idle");
 
   useEffect(() => {
     if (lipsyncData) {
@@ -52,7 +52,7 @@ export function Avatar({
       audioRef.current = audio;
       audio.play().catch((error) => console.error("Audio play failed:", error));
       audio.onended = () => {
-        setAnimation("Standing");
+        setAnimation("Idle");
         if (onFinishedTalking) {
           onFinishedTalking();
         }

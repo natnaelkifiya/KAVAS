@@ -9,16 +9,16 @@ import httpx
 import numpy as np
 from scipy.signal import butter, lfilter
 from config import MySettings
+from pathlib import Path
 
 # from dotenv import load_dotenv
-from kokoro import KPipeline
+from kokoro import KPipeline, KModel
 import tempfile
 
 import io
 import wave
 
 ####
-# from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 import torch
 import librosa
 
@@ -42,24 +42,29 @@ def bandpass_filter(data, lowcut, highcut, fs, order=5):
     return y
 
 
+cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
 
-model = Model.from_pretrained("pyannote/wespeaker-voxceleb-resnet34-LM")
-inference = Inference(model, window="whole")
-diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-pipeline = KPipeline(lang_code='a')
+print("*"*10)
+print(f"Using device: {device}")
+print("*"*10)
+
+model = Model.from_pretrained("pyannote/wespeaker-voxceleb-resnet34-LM", cache_dir=cache_dir)
+model.to(device)
+inference = Inference(model, window="whole", device=device)
+diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization", cache_dir=cache_dir)
+diarization_pipeline.to(device)
+
+
+tts_model = KModel(repo_id="hexgrad/Kokoro-82M").to(device).eval()
+pipeline = KPipeline(lang_code='a', model=tts_model)
 
 
 def preprocess_audio_in_memory(audio_path: str):
     # Step 1: Convert to 16kHz Mono WAV format
     audio = convert_audio_in_memory(input_file=audio_path)
-    with open(audio_path, 'rb') as file:
-        byte = file.read()
 
-    with open('test.wav', 'wb') as file:
-        file.write(byte)
-
-    # audio.export("test.wav", format="wav")
 
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
         temp_path = temp_file.name
@@ -90,34 +95,21 @@ async def whisper_transcribe(audio_path: str):
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             with open(audio_path, "rb") as file:
-                files = {"file": (file.name, file, "audio/m4a")}
+                files = {"file": open(audio_path, "rb")}
                 response = await client.post(
-                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    "https://api.openai.com/v1/audio/transcriptions",
                     headers={
-                        "Authorization": f"Bearer {MySettings.GROQ_API_KEY}",
+                        "Authorization": f"Bearer {MySettings.OPENAI_API_KEY}",
                     },
-                    data={
-                        "model": "whisper-large-v3-turbo",
-                        "response_format": "verbose_json",
+                    data = {
+                        "model": "whisper-1",
+                        "prompt": "Kifiya, chegebeya, Bunna bank, Amhara bank, Enat bank, wegagen bank, zamzam bank, Munir, Natnael"
                     },
                     files=files,
                 )
                 return response.json()
     except Exception as e:
         raise e
-
-
-# model_name = "facebook/wav2vec2-large-960h"
-# processor = Wav2Vec2Processor.from_pretrained(model_name)
-# wav2vec_model = Wav2Vec2ForCTC.from_pretrained(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
-
-# def wav2vec2_transcribe(audio_path):
-#     speech, _ = librosa.load(audio_path, sr=16000)
-#     print("cuda" if torch.cuda.is_available() else "cpu")
-#     input_values = processor(speech, return_tensors="pt", sampling_rate=16000).input_values
-#     logits = wav2vec_model(input_values.to("cuda" if torch.cuda.is_available() else "cpu")).logits
-#     predicted_ids = torch.argmax(logits, dim=-1)
-#     return processor.batch_decode(predicted_ids)[0].lower()
 
 
 
@@ -155,36 +147,45 @@ def generate_speech(text:str) -> bytes:
 def diarize_audio(diarization_pipeline, audio_file):
     """Runs speaker diarization on the given audio file."""
     diarization = diarization_pipeline(audio_file)
-    speaker_segments = [(turn.start, turn.end, speaker) for turn, _, speaker in diarization.itertracks(yield_label=True)]
+    audio = AudioSegment.from_file(audio_file)
+
+    speaker_segments = []
+    for turn, _, speaker in diarization.itertracks(yield_label=True):
+        start_ms = int(turn.start * 1000)
+        end_ms = int(turn.end * 1000)
+        segment_audio = audio[start_ms:end_ms]
+
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            segment_audio.export(temp_file.name, format="wav")
+            speaker_segments.append((speaker, turn.start, turn.end, temp_file.name))
     return speaker_segments
 
 def extract_embeddings(inference, audio_file, speaker_segments):
     """Extracts embeddings for each speaker segment using the Segment class."""
-    speaker_embeddings = {}
     
-    for start, end, speaker in speaker_segments:
+    speaker_embeddings  = []
+    
+    for start, end, speaker, file_path in speaker_segments:
         segment = Segment(start, end)
         embedding = inference(audio_file, segment)
-        if speaker in speaker_embeddings:
-            speaker_embeddings[speaker].append(embedding)
-        else:
-            speaker_embeddings[speaker] = [embedding]
-    
+        
+        speaker_embeddings.append((start,end,speaker,file_path, embedding))
     return speaker_embeddings
 
 
-def merge_or_select_embeddings(speaker_embeddings):
+def merge_or_select_embeddings(speaker_embeddings, audio_file):
     """Either concatenates or selects the best embedding per speaker."""
-    final_embeddings = {}
-    for speaker, embeddings in speaker_embeddings.items():
-        if len(embeddings) > 1:
-            final_embeddings[speaker] = torch.mean(torch.stack(embeddings), dim=0)  # Average embeddings
-        else:
-            final_embeddings[speaker] = embeddings[0]
-    return final_embeddings
+    audio = AudioSegment.from_file(audio_file)
+
+
+
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+        temp_path = temp_file.name
+        audio.export(temp_path, format="wav")
+        return temp_path
+
 
 def process_audio(audio_file):
     speaker_segments = diarize_audio(diarization_pipeline, audio_file)
     speaker_embeddings = extract_embeddings(inference, audio_file, speaker_segments)
-    final_embeddings = merge_or_select_embeddings(speaker_embeddings)
-    return final_embeddings
+    return speaker_embeddings

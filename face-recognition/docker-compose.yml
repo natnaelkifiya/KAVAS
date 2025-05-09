@@ -21,7 +21,7 @@ services:
 
   fastapi_app:
     # build: .
-    image: hanna95/face-recognition-fastapi_app:latest
+    image: hanna95/face-recognition-fastapi_app:v2
     container_name: face-recognition-fastapi_app
     restart: always
     depends_on:
